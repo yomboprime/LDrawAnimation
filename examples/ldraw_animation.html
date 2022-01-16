@@ -62,6 +62,7 @@
 			const clock = new THREE.Clock();
 
 			const vector3Temp1 = new THREE.Vector3();
+			const vector3Temp2 = new THREE.Vector3();
 			const quatTemp1 = new THREE.Quaternion();
 			const matrix4Temp1 = new THREE.Matrix4();
 			const eulerTemp1 = new THREE.Euler();
@@ -513,7 +514,14 @@
 
 						const part = stepParts[ i ];
 
-						part.position.lerpVectors( part.userData.positionStart, part.userData.positionEnd, tSmooth );
+						vector3Temp1.lerpVectors( part.userData.positionStart, part.userData.positionEnd, tSmooth );
+						vector3Temp2.subVectors( part.userData.positionEnd, part.userData.positionStart );
+						const d = vector3Temp2.length();
+						const y = d * ( - Math.pow( t - 0.5, 2 ) + 0.25 );
+
+						part.position.copy( vector3Temp1 );
+						part.position.y += y;
+
 						part.quaternion.slerpQuaternions( part.userData.quaternionStart, part.userData.partQuaternion, tSmooth );
 
 					}
@@ -529,7 +537,8 @@
 						updateRigidBodyFromObject( part );
 						physicsWorld.addRigidBody( part.userData.physicsBody );
 						dynamicObjects.push( part );
-					}
+
+					}
 
 					timeCurrentState = timeNextState;
 					timeNextState = time + 5;
