@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>LDraw animation</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<style>
+			body {
+				color: #444;
+			}
+			a {
+				color: #08f;
+			}
+		</style>
+	</head>
+
+	<body>
+		<div id="info">
+		<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - LDraw animation
+		</div>
+
+		<script src="js/libs/ammo.wasm.js"></script>
+
+		<script type="module">
+
+			import * as THREE from '../build/three.module.js';
+
+			import { GUI } from './jsm/libs/lil-gui.module.min.js';
+
+			import { OrbitControls } from './jsm/controls/OrbitControls.js';
+			import { RoomEnvironment } from './jsm/environments/RoomEnvironment.js';
+
+			import { LDrawLoader } from './jsm/loaders/LDrawLoader.js';
+
+			let container, progressBarDiv;
+
+			let camera, scene, renderer, controls, gui, guiData;
+
+			let parts;
+			let modelDiameter, turn;
+			let stepsParts;
+			const ANIM_FALLING = 0;
+			const ANIM_CONSTRUCTING = 1;
+			const ANIM_WAIT = 2;
+			let animationState;
+			let timeCurrentState;
+			let timeNextState;
+			let currentConstructionStep;
+
+			// Physics variables
+			let collisionConfiguration;
+			let dispatcher;
+			let broadphase;
+			let solver;
+			let physicsWorld;
+			const dynamicObjects = [];
+			let btVectorAux1;
+			let btQuatAux1;
+			let btTransformAux1;
+			let time = 0;
+			const clock = new THREE.Clock();
+
+			const vector3Temp1 = new THREE.Vector3();
+			const quatTemp1 = new THREE.Quaternion();
+			const matrix4Temp1 = new THREE.Matrix4();
+			const eulerTemp1 = new THREE.Euler();
+
+			const ldrawPath = 'models/ldraw/officialLibrary/';
+
+			const modelFileList = {
+				'Car': 'models/car.ldr_Packed.mpd',
+				'Lunar Vehicle': 'models/1621-1-LunarMPVVehicle.mpd_Packed.mpd',
+				'Radar Truck': 'models/889-1-RadarTruck.mpd_Packed.mpd',
+				'Trailer': 'models/4838-1-MiniVehicles.mpd_Packed.mpd',
+				'Bulldozer': 'models/4915-1-MiniConstruction.mpd_Packed.mpd',
+				'Helicopter': 'models/4918-1-MiniFlyers.mpd_Packed.mpd',
+				'Plane': 'models/5935-1-IslandHopper.mpd_Packed.mpd',
+				'Lighthouse': 'models/30023-1-Lighthouse.ldr_Packed.mpd',
+				'X-Wing mini': 'models/30051-1-X-wingFighter-Mini.mpd_Packed.mpd',
+				'AT-ST mini': 'models/30054-1-AT-ST-Mini.mpd_Packed.mpd',
+				'AT-AT mini': 'models/4489-1-AT-AT-Mini.mpd_Packed.mpd',
+				'Shuttle': 'models/4494-1-Imperial Shuttle-Mini.mpd_Packed.mpd',
+				'TIE Interceptor': 'models/6965-1-TIEIntercep_4h4MXk5.mpd_Packed.mpd',
+				'Star fighter': 'models/6966-1-JediStarfighter-Mini.mpd_Packed.mpd',
+//				'X-Wing': 'models/7140-1-X-wingFighter.mpd_Packed.mpd',
+				'AT-ST': 'models/10174-1-ImperialAT-ST-UCS.mpd_Packed.mpd'
+			};
+
+			Ammo().then( function ( AmmoLib ) {
+
+				Ammo = AmmoLib;
+
+				init();
+				animate();
+
+			} );
+
+			function init() {
+
+				container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
+				camera.position.set( 150, 200, 250 );
+
+				//
+
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.toneMapping = THREE.ACESFilmicToneMapping;
+				container.appendChild( renderer.domElement );
+
+				// scene
+
+				const pmremGenerator = new THREE.PMREMGenerator( renderer );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xdeebed );
+				scene.environment = pmremGenerator.fromScene( new RoomEnvironment() ).texture;
+
+				controls = new OrbitControls( camera, renderer.domElement );
+
+				//
+
+				guiData = {
+					modelFileName: modelFileList[ 'Car' ],
+					displayLines: true
+				};
+
+				window.addEventListener( 'resize', onWindowResize );
+
+				progressBarDiv = document.createElement( 'div' );
+				progressBarDiv.innerText = 'Loading...';
+				progressBarDiv.style.fontSize = '3em';
+				progressBarDiv.style.color = '#888';
+				progressBarDiv.style.display = 'block';
+				progressBarDiv.style.position = 'absolute';
+				progressBarDiv.style.top = '50%';
+				progressBarDiv.style.width = '100%';
+				progressBarDiv.style.textAlign = 'center';
+
+				initPhysics();
+
+				reloadObject( true );
+
+			}
+
+			function initPhysics() {
+
+				// Physics configuration
+
+				collisionConfiguration = new Ammo.btDefaultCollisionConfiguration();
+				dispatcher = new Ammo.btCollisionDispatcher( collisionConfiguration );
+				broadphase = new Ammo.btDbvtBroadphase();
+				solver = new Ammo.btSequentialImpulseConstraintSolver();
+				physicsWorld = new Ammo.btDiscreteDynamicsWorld( dispatcher, broadphase, solver, collisionConfiguration );
+				physicsWorld.setGravity( new Ammo.btVector3( 0, - 150, 0 ) );
+
+				// Create the floor body
+
+				const groundShape = new Ammo.btStaticPlaneShape( new Ammo.btVector3( 0, 1, 0 ), 0 );
+				const groundTransform = new Ammo.btTransform();
+				groundTransform.setIdentity();
+				const groundMass = 0;
+				const groundLocalInertia = new Ammo.btVector3( 0, 0, 0 );
+				const groundMotionState = new Ammo.btDefaultMotionState( groundTransform );
+				const groundBody = new Ammo.btRigidBody( new Ammo.btRigidBodyConstructionInfo( groundMass, groundMotionState, groundShape, groundLocalInertia ) );
+				physicsWorld.addRigidBody( groundBody );
+
+				btVectorAux1 = new Ammo.btVector3( 0, 0, 0 );
+				btQuatAux1 = new Ammo.btQuaternion( 0, 0, 0, 1 );
+				btTransformAux1 = new Ammo.btTransform();
+
+			}
+
+			function updatePhysics( deltaTime ) {
+
+				physicsWorld.stepSimulation( deltaTime, 5 );
+
+				// Update objects
+				for ( let i in dynamicObjects ) {
+
+					const object = dynamicObjects[ i ];
+					const objPhys = object.userData.physicsBody;
+					const ms = objPhys.getMotionState();
+					if ( ms ) {
+
+						ms.getWorldTransform( btTransformAux1 );
+						const p = btTransformAux1.getOrigin();
+						const q = btTransformAux1.getRotation();
+						object.position.set( p.x(), p.y(), p.z() );
+						object.quaternion.set( q.x(), q.y(), q.z(), q.w() );
+
+					}
+
+				}
+
+			}
+
+			function createRigidBody( object, physicsShape, mass ) {
+
+				const pos = object.position;
+				const quat = object.quaternion;
+
+				const transform = btTransformAux1;
+				transform.setIdentity();
+				btVectorAux1.setValue( pos.x, pos.y, pos.z );
+				transform.setOrigin( btVectorAux1 );
+				btQuatAux1.setValue( quat.x, quat.y, quat.z, quat.w )
+				transform.setRotation( btQuatAux1 );
+
+				const motionState = new Ammo.btDefaultMotionState( transform );
+
+				const localInertia = new Ammo.btVector3( 0, 0, 0 );
+				physicsShape.calculateLocalInertia( mass, localInertia );
+
+				const rbInfo = new Ammo.btRigidBodyConstructionInfo( mass, motionState, physicsShape, localInertia );
+				const body = new Ammo.btRigidBody( rbInfo );
+
+				body.setFriction( 0.5 );
+
+				object.userData.physicsBody = body;
+
+				if ( mass > 0 ) {
+
+					dynamicObjects.push( object );
+
+					// Disable deactivation
+					body.setActivationState( 4 );
+
+				}
+
+				physicsWorld.addRigidBody( body );
+
+			}
+
+			function updateRigidBodyFromObject( object ) {
+
+				const pos = object.position;
+				const quat = object.quaternion;
+
+				const transform = btTransformAux1;
+				transform.setIdentity();
+				btVectorAux1.setValue( pos.x, pos.y, pos.z );
+				transform.setOrigin( btVectorAux1 );
+				btQuatAux1.setValue( quat.x, quat.y, quat.z, quat.w )
+				transform.setRotation( btQuatAux1 );
+
+				const motionState = new Ammo.btDefaultMotionState( transform );
+
+				object.userData.physicsBody.setMotionState( motionState );
+
+			}
+
+			function getTurnOffset() {
+
+				return turn ? modelDiameter : - modelDiameter;
+
+			}
+
+			function placePartRandomly( part, diameter ) {
+
+				part.position.set(
+					( Math.random() - 0.5 ) * diameter + getTurnOffset(),
+					( Math.random() + 0.6 ) * diameter,
+					( Math.random() - 0.5 ) * diameter
+				);
+				part.quaternion.setFromEuler(
+					eulerTemp1.set(
+						( 2 * Math.PI * Math.random() ),
+						( 2 * Math.PI * Math.random() ),
+						( 2 * Math.PI * Math.random() )
+					)
+				);
+
+			}
+
+			function updateObjectsVisibility( model ) {
+
+				for ( let i in parts ) {
+
+					parts[ i ].traverse( c => {
+
+						if ( c.isLineSegments ) {
+
+							c.visible = guiData.displayLines;
+
+						}
+
+					} );
+
+				}
+
+			}
+
+			function isPartType( type ) {
+
+				return type === 'Part' || type === 'Unofficial_Part';
+
+			}
+
+			function reloadObject( resetCamera ) {
+
+				if ( parts ) for ( let i in parts ) scene.remove( parts[ i ] );
+				parts = undefined;
+
+				updateProgressBar( 0 );
+				showProgressBar();
+
+				const lDrawLoader = new LDrawLoader();
+				lDrawLoader.smoothNormals = true;
+				lDrawLoader
+					.setPath( ldrawPath )
+					.load( guiData.modelFileName, function ( model ) {
+
+						if ( parts ) for ( let i in parts ) scene.remove( parts[ i ] );
+						parts = [];
+						turn = false;
+
+						// Convert from LDraw coordinates: rotate 180 degrees around OX
+						model.rotation.x = Math.PI;
+
+						const modelBbox = new THREE.Box3().setFromObject( model );
+						const size = modelBbox.getSize( new THREE.Vector3() );
+						const radius = Math.max( size.x, Math.max( size.y, size.z ) ) * 0.5;
+						modelDiameter = 2 * radius;
+
+						// Put above floor
+						model.position.y += radius * 1.05;
+
+						model.traverse( c => {
+
+							if ( isPartType( c.userData.type ) ) {
+
+								parts.push( c );
+
+							}
+
+						} );
+
+						model.updateMatrixWorld( true );
+
+						for ( let i in parts ) {
+
+							const partOrig = parts[ i ].clone();
+							const part = partOrig.clone();
+							parts[ i ] = part;
+							part.userData.type = partOrig.userData.type;
+							part.userData.numConstructionSteps = partOrig.userData.numConstructionSteps;
+							part.userData.constructionStep = partOrig.userData.constructionStep;
+
+							matrix4Temp1.copy( part.matrixWorld );
+							part.removeFromParent();
+
+							part.position.set( 0, 0, 0 );
+							part.quaternion.set( 0, 0, 0, 1 );
+							part.updateMatrixWorld( true );
+							const bbox = new THREE.Box3().setFromObject( part );
+							bbox.getSize( vector3Temp1 );
+							const sx = vector3Temp1.x;
+							const sy = vector3Temp1.y;
+							const sz = vector3Temp1.z;
+							const objectSize = sx > sy ? ( sz > sx ? sz : sx ) : ( sz > sy ? sz : sy );
+							part.userData.objectSize = objectSize;
+
+							matrix4Temp1.decompose( part.position, part.quaternion, part.scale );
+							part.userData.partPosition = new THREE.Vector3().copy( part.position );
+							part.userData.partQuaternion = new THREE.Quaternion().copy( part.quaternion );
+							part.userData.positionStart = new THREE.Vector3();
+							part.userData.positionEnd = new THREE.Vector3();
+							part.userData.quaternionStart = new THREE.Quaternion();
+
+							placePartRandomly( part, objectSize * 5 );
+
+							const physicsShape = new Ammo.btBoxShape( new Ammo.btVector3( sx * 0.5, sy * 0.5, sz * 0.5 ) );
+							physicsShape.setMargin( objectSize * 0.01 );
+							const mass = Math.pow( 10 * objectSize, 2.2 );
+							createRigidBody( part, physicsShape, mass );
+
+							scene.add( part );
+
+						}
+
+						const numConstructionSteps = model.userData.numConstructionSteps;
+						stepsParts = [];
+						for ( let p in parts ) {
+
+							const part = parts[ p ];
+
+							let constructionStep = 0;
+
+							if ( numConstructionSteps > 1 ) constructionStep = part.userData.constructionStep;
+							else constructionStep = p;
+
+							if ( ! stepsParts[ constructionStep ] ) stepsParts[ constructionStep ] = [];
+							stepsParts[ constructionStep ].push( part );
+
+						}
+
+						updateObjectsVisibility();
+
+						// Init animation
+						time = 0;
+						animationState = ANIM_FALLING;
+						timeCurrentState = time;
+						timeNextState = time + 5;
+
+						// Adjust camera
+
+						if ( resetCamera ) {
+
+							controls.target0.copy( modelBbox.getCenter( new THREE.Vector3() ) );
+							controls.position0.set( - 2.3, 1, 2 ).multiplyScalar( radius * 2.5 ).add( controls.target0 );
+							controls.reset();
+
+						}
+
+						createGUI();
+
+						hideProgressBar();
+
+					}, onProgress, onError );
+
+			}
+
+			function handleAnimation() {
+
+				if ( ! parts ) return;
+
+				const constructionDuration = 20 * Math.min( 1.3, stepsParts.length / 60 );
+				const stepDuration = constructionDuration / stepsParts.length;
+
+				switch ( animationState ) {
+
+					case ANIM_FALLING:
+						if ( time >= timeNextState ) beginConstruction();
+						break;
+
+					case ANIM_CONSTRUCTING:
+						animPieces();
+						break;
+
+					case ANIM_WAIT:
+						if ( time >= timeNextState ) explode();
+						break;
+
+				}
+
+				function beginConstruction() {
+
+					animationState = ANIM_CONSTRUCTING;
+					timeCurrentState = time;
+					currentConstructionStep = - 1;
+
+					animPieces();
+
+				}
+
+				function animPieces() {
+
+					if ( time >= timeNextState ) {
+
+						if ( currentConstructionStep >= 0 ) {
+
+							const stepParts = stepsParts[ currentConstructionStep ];
+							for ( let i in stepParts ) {
+
+								const part = stepParts[ i ];
+								part.position.copy( part.userData.positionEnd );
+								part.quaternion.copy( part.userData.partQuaternion );
+
+							}
+
+						}
+
+						currentConstructionStep ++;
+						if ( currentConstructionStep >= stepsParts.length ) {
+
+							animationState = ANIM_WAIT;
+							timeCurrentState = timeNextState;
+							timeNextState = time + 3;
+							turn = ! turn;
+							return;
+
+						}
+
+						const stepParts = stepsParts[ currentConstructionStep ];
+						for ( let i in stepParts ) {
+
+							const part = stepParts[ i ];
+							part.userData.positionStart.copy( part.position );
+							part.userData.quaternionStart.copy( part.quaternion );
+							part.userData.positionEnd.copy( part.userData.partPosition );
+							part.userData.positionEnd.x -= getTurnOffset();
+
+							physicsWorld.removeRigidBody( part.userData.physicsBody );
+							dynamicObjects.splice( dynamicObjects.indexOf( part ), 1 );
+
+						}
+
+						timeCurrentState = timeNextState;
+						timeNextState = time + stepDuration;
+
+					}
+
+					const t = Math.min( 1, Math.max( 0, ( time - timeCurrentState ) / stepDuration ) );
+					const tSmooth = 1 / ( 1 + Math.pow( Math.E, - ( ( t - 0.5 ) * 6 ) ) );
+
+					const stepParts = stepsParts[ currentConstructionStep ];
+					for ( let i in stepParts ) {
+
+						const part = stepParts[ i ];
+
+						part.position.lerpVectors( part.userData.positionStart, part.userData.positionEnd, tSmooth );
+						part.quaternion.slerpQuaternions( part.userData.quaternionStart, part.userData.partQuaternion, tSmooth );
+
+					}
+
+				}
+
+				function explode() {
+
+					for ( let i in parts ) {
+
+						const part = parts[ i ];
+
+						updateRigidBodyFromObject( part );
+						physicsWorld.addRigidBody( part.userData.physicsBody );
+						dynamicObjects.push( part );
+					}
+
+					timeCurrentState = timeNextState;
+					timeNextState = time + 5;
+					animationState = ANIM_FALLING;
+
+				}
+
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function createGUI() {
+
+				if ( gui ) {
+
+					gui.destroy();
+
+				}
+
+				gui = new GUI();
+
+				gui.add( guiData, 'modelFileName', modelFileList ).name( 'Model' ).onFinishChange( function () {
+
+					reloadObject( true );
+
+				} );
+
+				gui.add( guiData, 'displayLines' ).name( 'Display Lines' ).onChange( updateObjectsVisibility );
+
+			}
+
+			//
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+				render();
+
+			}
+
+			function render() {
+
+				const deltaTime = clock.getDelta();
+
+				handleAnimation();
+
+				updatePhysics( deltaTime );
+
+				renderer.render( scene, camera );
+
+				time += deltaTime;
+
+			}
+
+			function onProgress( xhr ) {
+
+				if ( xhr.lengthComputable ) {
+
+					updateProgressBar( xhr.loaded / xhr.total );
+
+					console.log( Math.round( xhr.loaded / xhr.total * 100, 2 ) + '% downloaded' );
+
+				}
+
+			}
+
+			function onError( e ) {
+
+				const message = 'Error loading model: ' + e;
+				progressBarDiv.innerText = message;
+				console.log( message );
+
+			}
+
+			function showProgressBar() {
+
+				document.body.appendChild( progressBarDiv );
+
+			}
+
+			function hideProgressBar() {
+
+				document.body.removeChild( progressBarDiv );
+
+			}
+
+			function updateProgressBar( fraction ) {
+
+				progressBarDiv.innerText = 'Loading... ' + Math.round( fraction * 100, 2 ) + '%';
+
+			}
+
+		</script>
+
+		<!-- LDraw.org CC BY 2.0 Parts Library attribution -->
+		<div style="display: block; position: absolute; bottom: 8px; left: 8px; width: 160px; padding: 10px; background-color: #F3F7F8;">
+			<center>
+				<a href="http://www.ldraw.org"><img style="width: 145px" src="models/ldraw/ldraw_org_logo/Stamp145.png"></a>
+				<br />
+				<a href="http://www.ldraw.org/">This software uses the LDraw Parts Library</a>
+			</center>
+		</div>
+
+	</body>
+</html>
