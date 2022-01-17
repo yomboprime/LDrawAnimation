@@ -524,7 +524,9 @@
 
 					}
 
-					const t = Math.min( 1, Math.max( 0, ( time - timeCurrentState ) / stepDuration ) );
+					const tOrig = Math.min( 1, Math.max( 0, ( time - timeCurrentState ) / stepDuration ) );
+					const tPow = Math.sign( tOrig - 0.5 ) * ( 0.5 * Math.pow( 2 * Math.abs( tOrig - 0.5 ), 2 ) ) + 0.5;
+					const t = tPow;
 
 					const stepParts = stepsParts[ currentConstructionStep ];
 					for ( let i in stepParts ) {
