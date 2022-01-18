@@ -305,7 +305,12 @@
 
 			function reloadObject( resetCamera ) {
 
-				if ( parts ) for ( let i in parts ) scene.remove( parts[ i ] );
+				if ( parts ) for ( let i in parts ) {
+
+					scene.remove( parts[ i ] );
+					physicsWorld.removeRigidBody( part.userData.physicsBody );
+
+				}
 				parts = undefined;
 
 				updateProgressBar( 0 );
@@ -321,11 +326,8 @@
 
 							for ( let i in parts ) {
 
-								const part = stepParts[ i ];
-
+								const part = parts[ i ];
 								scene.remove( part );
-
-
 								physicsWorld.removeRigidBody( part.userData.physicsBody );
 
 							}
